@@ -10,9 +10,22 @@
  * still live. Settle only once the evidence shows a final result, unless we're
  * past `SPORTS_SETTLE_GRACE_SECS` past the deadline, at which point a data
  * outage must not lock funds forever.
+ *
+ * Evidence manifest: `buildSportsEvidenceManifest` produces a bounded,
+ * auditable record of the evidence items considered for a finality decision
+ * (source reference, capture time, content digest). Raw response bodies and
+ * any credential-bearing fields are deliberately excluded.
  */
 
+import { createHash } from 'node:crypto'
+
 export const SPORTS_SETTLE_GRACE_HOURS_DEFAULT = 12
+
+/** Maximum number of evidence items retained in a manifest. */
+export const SPORTS_EVIDENCE_MANIFEST_MAX_ITEMS = 20
+
+/** Maximum length of a retained source reference string. */
+export const SPORTS_EVIDENCE_SOURCE_REF_MAX_LEN = 256
 
 /** Grace window in seconds, honoring SPORTS_SETTLE_GRACE_HOURS (default 12h). */
 export const SPORTS_SETTLE_GRACE_SECS =
@@ -49,4 +62,58 @@ function eventLooksFinal(text: string): boolean {
   if (FINAL_MARKERS.test(text)) return true
   if (LIVE_MARKERS.test(text)) return false
   return false
+}
+
+/** One raw evidence item as fetched by a source adapter. */
+export interface SportsEvidenceInput {
+  /** Source identifier or URL; may carry credentials and is sanitised. */
+  sourceRef: string
+  /** Capture time, epoch seconds. */
+  capturedAt: number
+  /** Raw response body. Never retained in the manifest. */
+  body: string
+}
+
+/** A single bounded, auditable manifest entry. */
+export interface SportsEvidenceManifestItem {
+  sourceRef: string
+  capturedAt: number
+  /** Hex SHA-256 of the raw body; the body itself is not stored. */
+  digest: string
+}
+
+/** Bounded evidence manifest for a finality decision. */
+export interface SportsEvidenceManifest {
+  items: SportsEvidenceManifestItem[]
+  /** Count of evidence inputs dropped due to the item cap. */
+  truncated: number
+}
+
+/**
+ * Strip userinfo (user:pass@) and query-string secrets from a source reference,
+ * then clamp it to the maximum retained length.
+ */
+export function sanitizeSourceRef(ref: string): string {
+  let out = ref.trim()
+  out = out.replace(/^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)[^/@\s]+@/, '$1')
+  out = out.replace(/([?&])(api[_-]?key|token|secret|password|access[_-]?token|auth)=[^&\s]*/gi, '$1$2=REDACTED')
+  if (out.length > SPORTS_EVIDENCE_SOURCE_REF_MAX_LEN) {
+    out = out.slice(0, SPORTS_EVIDENCE_SOURCE_REF_MAX_LEN)
+  }
+  return out
+}
+
+/**
+ * Build a bounded evidence manifest. Records source reference, capture time and
+ * a content digest per item; never includes raw bodies or credentials. Items
+ * beyond `SPORTS_EVIDENCE_MANIFEST_MAX_ITEMS` are counted in `truncated`.
+ */
+export function buildSportsEvidenceManifest(inputs: SportsEvidenceInput[]): SportsEvidenceManifest {
+  const kept = inputs.slice(0, SPORTS_EVIDENCE_MANIFEST_MAX_ITEMS)
+  const items: SportsEvidenceManifestItem[] = kept.map((e) => ({
+    sourceRef: sanitizeSourceRef(e.sourceRef),
+    capturedAt: e.capturedAt,
+    digest: createHash('sha256').update(e.body, 'utf8').digest('hex'),
+  }))
+  return { items, truncated: Math.max(0, inputs.length - kept.length) }
 }
