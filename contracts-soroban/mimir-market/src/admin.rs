@@ -66,6 +66,7 @@ pub fn initialize(
             platform_fee_bps,
             agent_owner_fee_bps,
             platform_recipient: platform_recipient.clone(),
+            revision: 1,
         },
     );
 
@@ -178,6 +179,8 @@ pub fn queue_fee_policy(
         .ok_or(Error::Overflow)?;
     let expected_revision = storage::fee_policy_revision(env);
 
+    let next_revision = storage::fee_policy(env)?.revision.checked_add(1).ok_or(Error::Overflow)?;
+
     storage::set_pending_fee_policy(
         env,
         &PendingFeePolicy {
@@ -186,6 +189,7 @@ pub fn queue_fee_policy(
             platform_recipient: platform_recipient.clone(),
             executable_at,
             expected_revision,
+            revision: next_revision,
         },
     );
     events::FeePolicyQueued {
@@ -232,19 +236,34 @@ pub fn execute_fee_policy(env: &Env) -> Result<(), Error> {
         &queued.platform_recipient,
     )?;
 
+    let previous = storage::fee_policy(env)?;
+    let effective_revision = if queued.revision == 0 {
+        previous.revision.checked_add(1).ok_or(Error::Overflow)?
+    } else {
+        queued.revision
+    };
+
     storage::set_fee_policy(
         env,
         &FeePolicy {
             platform_fee_bps: queued.platform_fee_bps,
             agent_owner_fee_bps: queued.agent_owner_fee_bps,
             platform_recipient: queued.platform_recipient.clone(),
+            revision: effective_revision,
         },
     );
     storage::clear_pending_fee_policy(env);
     events::FeePolicyUpdated {
         platform_fee_bps: queued.platform_fee_bps,
         agent_owner_fee_bps: queued.agent_owner_fee_bps,
-        platform_recipient: queued.platform_recipient,
+        platform_recipient: queued.platform_recipient.clone(),
+    }
+    .publish(env);
+    events::FeeRecipientTransitioned {
+        effective_revision,
+        previous_platform_recipient: previous.platform_recipient.clone(),
+        platform_recipient: queued.platform_recipient.clone(),
+        effective_at: env.ledger().timestamp(),
     }
     .publish(env);
     Ok(())
