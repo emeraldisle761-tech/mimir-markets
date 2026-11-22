@@ -177,9 +177,8 @@ pub fn queue_fee_policy(
         .timestamp()
         .checked_add(FEE_TIMELOCK_SECONDS)
         .ok_or(Error::Overflow)?;
-    let expected_revision = storage::fee_policy_revision(env);
-
-    let next_revision = storage::fee_policy(env)?.revision.checked_add(1).ok_or(Error::Overflow)?;
+    let expected_revision = storage::fee_policy_revision(env)?;
+    let next_revision = expected_revision.checked_add(1).ok_or(Error::Overflow)?;
 
     storage::set_pending_fee_policy(
         env,
@@ -188,10 +187,10 @@ pub fn queue_fee_policy(
             agent_owner_fee_bps,
             platform_recipient: platform_recipient.clone(),
             executable_at,
-            expected_revision,
             revision: next_revision,
         },
     );
+    storage::set_pending_fee_policy_base_revision(env, expected_revision);
     events::FeePolicyQueued {
         platform_fee_bps,
         agent_owner_fee_bps,
@@ -225,9 +224,12 @@ pub fn execute_fee_policy(env: &Env) -> Result<(), Error> {
     if env.ledger().timestamp() < queued.executable_at {
         return Err(Error::Timelocked);
     }
-    if storage::fee_policy_revision(env) != queued.expected_revision {
-        return Err(Error::StaleFeePolicyRevision);
-    }
+    // Older pending entries predate the separate revision key. Their next
+    // revision was assigned from the active revision at queue time, so derive
+    // that base revision when the key is absent.
+    let expected_revision = storage::pending_fee_policy_base_revision(env)
+        .unwrap_or_else(|| queued.revision.saturating_sub(1));
+    fees::check_policy_revision(expected_revision, storage::fee_policy_revision(env)?)?;
     // Re-checked at execution: the cap is enforced on the way in AND on the way
     // out, so a queue written under any past code path still cannot exceed it.
     validate_policy(

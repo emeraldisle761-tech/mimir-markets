@@ -9,12 +9,12 @@ use crate::types::{Error, FeeSnapshot, BPS_DIVISOR};
 /// `stake * bps / BPS_DIVISOR`, truncating. Checked multiplication so an
 /// absurd stake errors instead of wrapping, matching Solidity 0.8 revert-on-
 /// overflow semantics.
-/// Returns `Error::FeePolicyRevisionMismatch` when an approved administrative
+/// Returns `Error::StaleFeePolicyRevision` when an approved administrative
 /// change is stale relative to the active fee-policy revision.
 /// Callers must reject such changes and leave the active policy and balances untouched.
-pub fn check_policy_revision(expected: u32, active: u32) -> Result<(), Error> {
+pub fn check_policy_revision(expected: u64, active: u64) -> Result<(), Error> {
     if expected != active {
-        return Err(Error::FeePolicyRevisionMismatch);
+        return Err(Error::StaleFeePolicyRevision);
     }
     Ok(())
 }
